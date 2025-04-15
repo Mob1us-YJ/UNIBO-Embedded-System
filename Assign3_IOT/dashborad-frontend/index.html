@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Temperature Monitoring</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@^3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@^1"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: space-between;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            width: 80%;
+            margin: 20px auto;
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+        }
+        .left-panel {
+            width: 30%;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .right-panel {
+            width: 65%;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        h1, h2, h3 {
+            font-size: 1.5em;
+            margin-bottom: 20px;
+        }
+        .status {
+            font-size: 20px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        #alarm {
+            font-weight: bold;
+            color: red;
+        }
+        .alarm-active {
+            color: white;
+            background-color: red;
+            padding: 5px;
+            border-radius: 5px;
+        }
+        .controls button {
+            font-size: 1em;
+            padding: 10px;
+            margin: 5px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        .controls button:hover {
+            background-color: #45a049;
+        }
+        .manual-controls {
+            display: none;
+            margin: 20px 0;
+        }
+        #windowSlider {
+            width: 100%;
+        }
+        canvas {
+            width: 100%;
+            height: 400px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- status info -->
+        <div class="left-panel">
+            <h1>System Status</h1>
+            <p class="status">Mode: <span id="mode">AUTOMATIC</span></p>
+            <p class="status">System State: <span id="systemState">NORMAL</span></p>
+            <p class="status">Alarm: <span id="alarm">No</span></p>
+            <p class="status">Window Opening: <span id="windowOpen">0%</span></p>
+
+            <div class="controls">
+                <button onclick="toggleMode()">Toggle Mode</button>
+                <button onclick="ackAlarm()">Acknowledge Alarm</button>
+            </div>
+
+            <!-- Manual control part -->
+            <div class="manual-controls">
+                <h3>Manual Window Control</h3>
+                <input type="range" id="windowSlider" min="0" max="100" step="5" value="0" oninput="updateWindowValue(this.value)">
+                <span id="windowValue">0%</span>
+                <button onclick="setWindow()">Set Window</button>
+            </div>
+        </div>
+
+        <!-- Temp data -->
+        <div class="right-panel">
+            <h1>Temperature Data</h1>
+            <canvas id="temperatureChart"></canvas>
+            <p>Average: <span id="avgTemp">0</span>°C | Min: <span id="minTemp">0</span>°C | Max: <span id="maxTemp">0</span>°C</p>
+        </div>
+    </div>
+
+    <script>
+        const ctx = document.getElementById('temperatureChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Temperature (°C)',
+                    data: [],
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    fill: false
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'second'
+                        }
+                    },
+                    y: {
+                        beginAtZero: false
+                    }
+                }
+            }
+        });
+        
+        async function fetchData() {
+            try {
+				await fetchStatus();    // fetch status first to determine if we need to show manual controls
+                const response = await fetch('http://localhost:8080/api/data');
+                const data = await response.json();
+                
+                if (data.length > 0) {
+                    chart.data.labels = data.map(item => new Date(item.time));
+                    chart.data.datasets[0].data = data.map(item => item.temperature);
+                    chart.update();
+
+                    const latestData = data[0];
+                    document.getElementById('systemState').textContent = latestData.state;    
+                    //show alarm status                
+                    const alarmElement = document.getElementById('alarm');
+                    if (latestData.alarm) {
+                        alarmElement.textContent = 'ACTIVE!';
+                        alarmElement.classList.add('alarm-active');
+                    } else {
+                        alarmElement.textContent = 'No';
+                        alarmElement.classList.remove('alarm-active');
+                    }
+                    //change window opening value only when in manual mode
+					const mode = document.getElementById('mode').textContent;
+					if (mode === 'AUTOMATIC') {
+						document.getElementById('windowOpen').textContent = latestData.window_opening + "%";
+					} else {
+						document.getElementById('windowOpen').textContent = manualWindowOpening + "%";
+					}
+                    // Calcu late average, min, max
+                    const temperatures = data.map(item => item.temperature);
+                    const avg = (temperatures.reduce((sum, val) => sum + val, 0) / temperatures.length).toFixed(1);
+                    const min = Math.min(...temperatures).toFixed(1);
+                    const max = Math.max(...temperatures).toFixed(1);
+
+                    document.getElementById('avgTemp').textContent = avg;
+                    document.getElementById('minTemp').textContent = min;
+                    document.getElementById('maxTemp').textContent = max;
+                }
+            } catch (error) {
+                console.error("Error fetching temperature data:", error);
+            }
+        }
+        //get status from server through api/status
+        async function fetchStatus() {
+            try {
+                const response = await fetch('http://localhost:8080/api/status');
+                const status = await response.json();
+                //get control mode
+                document.getElementById('mode').textContent = status.mode;
+                //show manual controls
+                document.querySelector('.manual-controls').style.display = status.mode === 'MANUAL' ? 'block' : 'none';
+            } catch (error) {
+                console.error("Error fetching system status:", error);
+            }
+        }
+        //transmit command to server through api/control
+	    async function toggleMode() {
+            try {
+                await fetch('http://localhost:8080/api/control', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: 'TOGGLE_MODE' })
+                });
+                fetchStatus();
+            } catch (error) {
+                console.error("Error toggling mode:", error);
+            }
+        }
+
+        async function ackAlarm() {
+            try {
+			    document.getElementById('alarm').textContent = 'No';
+			    document.getElementById('alarm').classList.remove('alarm-active');
+			    document.getElementById('systemState').textContent = 'NORMAL';
+                await fetch('http://localhost:8080/api/control', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: 'ACK_ALARM' })
+            });
+            setTimeout(fetchData, 500);
+            } 
+            catch (error) {
+            console.error("Error acknowledging alarm:", error);
+            }
+        }
+
+        function updateWindowValue(value) {
+            document.getElementById('windowValue').textContent = value + "%";
+        }
+
+        async function setWindow() {
+            const value = document.getElementById('windowSlider').value;
+		    manualWindowOpening = value;
+		    document.getElementById('windowOpen').textContent = value + "%";
+            try {
+                await fetch('http://localhost:8080/api/control', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: 'SET_WINDOW', value: parseInt(value) })
+                });
+            setTimeout(fetchData, 500);
+            } 
+            catch (error) {
+            console.error("Error setting window value:", error);
+        }
+        }
+
+        setInterval(() => {
+            fetchData();
+            fetchStatus();
+        }, 5000);
+        fetchData();
+        fetchStatus();
+    </script>
+</body>
+</html>
